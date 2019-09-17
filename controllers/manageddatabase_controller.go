@@ -177,13 +177,19 @@ func (c *ManagedDatabaseController) reconcileMigrationJob(oneMigration migration
 	for _, job := range jobsForDatabase.Items {
 		if job.Labels["migration-uid"] == string(oneMigration.version.UID) {
 			// This is the job for the migration in question
-			oneMigration.log.Info("Found matching migration")
+			oneMigration.log.Info("Found matching migration job")
 			foundJob = true
 
 			if job.Status.Succeeded > 0 {
-				oneMigration.log.Info("Migration is complete")
+				oneMigration.log.Info("Migration job is complete")
 
 				// TODO: should we write the metric here or wait until cleanup?
+			} else if job.Status.Active == 0 && job.Status.Conditions != nil {
+				for _, condition := range job.Status.Conditions {
+					if condition.Type == "Failed" && condition.Status == "True" {
+						return fmt.Errorf("Migration job failed to complete (%s)", job.Name)
+					}
+				}
 			}
 		} else {
 			// This is an old job and should be cleaned up
@@ -358,6 +364,7 @@ func (c *ManagedDatabaseController) SetupWithManager(mgr ctrl.Manager) error {
 		For(&dba.ManagedDatabase{}).
 		Owns(&batchv1.Job{}).
 		Owns(&corev1.Secret{}).
+		WithEventFilter(&ManagedDatabaseVersionChangedPredicate{}).
 		Complete(reconcile.Func(c.ReconcileManagedDatabase))
 	if err != nil {
 		return fmt.Errorf("Unable to finish operator setup: %w", err)
